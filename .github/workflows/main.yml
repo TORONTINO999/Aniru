@@ -1,8 +1,8 @@
-name: Обновление плейлиста аниме-фильмов55
+name: Обновление плейлиста аниме-фильмов
 
 on:
   schedule:
-    - cron: '0 6 * * 1'   # каждую неделю в 6:00 UTC
+    - cron: '0 6 * * 1'   # каждую неделю в 6:00 UTC (понедельник)
   workflow_dispatch:      # ручной запуск
 
 jobs:
@@ -19,12 +19,20 @@ jobs:
           python-version: '3.11'
 
       - name: Кэширование моделей EasyOCR
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.EasyOCR
-          key: easyocr-models-${{ runner.os }}
+          key: easyocr-models-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
           restore-keys: |
             easyocr-models-${{ runner.os }}
+
+      - name: Кэширование пакетов Python
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}
 
       - name: Установка Tesseract (резерв)
         run: |
