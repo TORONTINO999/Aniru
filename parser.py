@@ -128,20 +128,25 @@ def is_movie(anime_id):
         if resp.status_code != 200:
             return False
 
+        # Явно указываем кодировку windows-1251
+        resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
-        # Ищем строку "Тип:" в блоке с информацией
+
+        # Ищем все строки с классом anime_review
         review_items = soup.find_all('p', class_='anime_review')
         for p in review_items:
             text = p.text.strip()
             if 'Тип:' in text:
-                # Проверяем, что после "Тип:" написано "Фильм" или "Movie"
-                if re.search(r'Тип:\s*(Фильм|Movie)', text, re.IGNORECASE):
+                # Извлекаем значение после "Тип:"
+                type_value = text.split('Тип:')[-1].strip()
+                # Проверяем, что это фильм
+                if re.search(r'^(Фильм|Movie)', type_value, re.IGNORECASE):
                     return True
                 else:
                     return False
         return False
     except Exception as e:
-        print(f"   ❌ Ошибка проверки типа: {e}")
+        print(f"   ❌ Ошибка проверки типа для {anime_id}: {e}")
         return False
 
 # ==========================================================
@@ -157,10 +162,15 @@ def get_movies_list(year, page=1):
         if resp.status_code != 200:
             return []
 
+        # Указываем кодировку
+        resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
-        cards = soup.find_all('div', class_='anime_card')
-        movies = []
 
+        cards = soup.find_all('div', class_='anime_card')
+        if not cards:
+            return []  # нет аниме на этой странице
+
+        movies = []
         for card in cards:
             link = card.find('a', class_='card_link')
             if not link:
@@ -205,6 +215,7 @@ def get_episodes(anime_id):
         if resp.status_code != 200:
             return []
 
+        resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         episode_block = soup.find('div', id='episode_list')
         if not episode_block:
@@ -230,7 +241,7 @@ def get_episodes(anime_id):
             })
         return episodes
     except Exception as e:
-        print(f"   ❌ Ошибка загрузки серий: {e}")
+        print(f"   ❌ Ошибка загрузки серий для {anime_id}: {e}")
         return []
 
 # ==========================================================
@@ -259,20 +270,28 @@ def main():
             print(f"   📄 Страница {page}...")
             movies = get_movies_list(year, page)
             if not movies:
+                # Если на первой странице нет аниме, значит год пустой
+                if page == 1:
+                    print(f"      ℹ️ Нет аниме за {year} год")
+                else:
+                    print(f"      ℹ️ Больше страниц нет")
                 break
 
             # Фильтруем уже обработанные
             new_items = [m for m in movies if m['id'] not in processed]
             year_movies.extend(new_items)
-            print(f"      ✅ Найдено новых фильмов: {len(new_items)}")
+            print(f"      ✅ Найдено новых фильмов: {len(new_items)} из {len(movies)}")
 
+            # Проверяем, есть ли следующая страница
+            # Если на странице меньше 12 аниме, значит это последняя
             if len(movies) < 12:
                 break
             page += 1
             time.sleep(1)
 
         all_movies.extend(year_movies)
-        print(f"   📊 Всего за {year} год: {len(year_movies)} новых фильмов")
+        if year_movies:
+            print(f"   📊 Всего за {year} год: {len(year_movies)} новых фильмов")
         time.sleep(1)
 
     print(f"\n📊 Всего новых фильмов: {len(all_movies)}")
@@ -305,7 +324,7 @@ def main():
                 if poster_path:
                     print(f"   🖼️ Постер сохранён")
 
-            # Серии (для фильма обычно 1)
+            # Серии
             episodes = get_episodes(anime_id)
             if not episodes:
                 print(f"   ⚠️ Серии не найдены")
