@@ -1,0 +1,40 @@
+name: Обновление плейлиста аниме
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # каждую неделю в 6:00 по UTC (в понедельник)
+  workflow_dispatch:      # возможность запуска вручную
+
+jobs:
+  update-playlist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Клонирование репозитория
+        uses: actions/checkout@v4
+
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Установка Tesseract OCR
+        run: |
+          sudo apt update
+          sudo apt install -y tesseract-ocr
+
+      - name: Установка зависимостей Python
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Запуск парсера
+        run: python parser.py
+
+      - name: Коммит и пуш изменений
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add anime_all.m3u posters/ progress.json
+          git diff --staged --quiet || git commit -m "Автоматическое обновление плейлиста $(date -u +'%Y-%m-%d %H:%M:%S')"
+          git push
