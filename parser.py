@@ -2,10 +2,12 @@ import os
 import re
 import time
 import json
+import base64
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
 import easyocr
 from io import BytesIO
 
@@ -19,91 +21,143 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": BASE_URL
 }
-
 session = requests.Session()
 session.headers.update(HEADERS)
 
-POSTERS_DIR = "posters_movies"
+POSTERS_DIR = "posters"
 os.makedirs(POSTERS_DIR, exist_ok=True)
+OUTPUT_M3U = "anime_films.m3u"
+PROGRESS_FILE = "progress.json"
 
-OUTPUT_M3U = "anime_movies.m3u"
-PROGRESS_FILE = "progress_movies.json"
-
-# Инициализируем EasyOCR (читает только цифры)
-reader = easyocr.Reader(['en'], gpu=False)  # gpu=False для совместимости
+# Инициализируем EasyOCR (только английский, т.к. цифры)
+reader = easyocr.Reader(['en'], gpu=False)
 
 # ==========================================================
-# РАСПОЗНАВАНИЕ КАПЧИ С ПОМОЩЬЮ EasyOCR
+# РАСПОЗНАВАНИЕ КАПЧИ (EasyOCR + Tesseract + OCR.space)
 # ==========================================================
-def solve_captcha(img_url):
-    """Загружает капчу, распознаёт 3‑значный цифровой код с помощью EasyOCR."""
+
+def solve_captcha_easyocr(img_url):
+    """Распознаёт капчу с помощью EasyOCR (самый точный локальный метод)."""
     try:
         resp = session.get(img_url, timeout=10)
         if resp.status_code != 200:
             return None
         img = Image.open(BytesIO(resp.content))
-        # Конвертируем в массив для EasyOCR
-        result = reader.readtext(img, allowlist='0123456789', detail=0)
+        import numpy as np
+        img_np = np.array(img)
+        result = reader.readtext(img_np, allowlist='0123456789', detail=0)
         if result:
-            # Берём первую распознанную строку, оставляем только цифры
             code = re.sub(r'\D', '', result[0])
             if len(code) >= 3:
-                return code[:3]   # возвращаем первые 3 цифры
+                return code[:3]
         return None
     except Exception as e:
-        print(f"   ❌ Ошибка распознавания капчи: {e}")
+        print(f"   ⚠️ EasyOCR error: {e}")
         return None
 
+def solve_captcha_ocrspace(img_url):
+    """Использует OCR.space API (если есть ключ)."""
+    api_key = os.environ.get("OCR_SPACE_KEY", "")
+    if not api_key:
+        return None
+    try:
+        resp = session.get(img_url, timeout=10)
+        if resp.status_code != 200:
+            return None
+        img_b64 = base64.b64encode(resp.content).decode('utf-8')
+        payload = {
+            'apikey': api_key,
+            'base64Image': img_b64,
+            'language': 'eng',
+            'OCREngine': 2,
+            'scale': True,
+            'isTable': False,
+            'detectOrientation': False,
+        }
+        r = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get('OCRExitCode') == 1:
+                text = data['ParsedResults'][0]['ParsedText']
+                code = re.sub(r'\D', '', text).strip()
+                if len(code) >= 3:
+                    return code[:3]
+        return None
+    except Exception as e:
+        print(f"   ⚠️ OCR.space error: {e}")
+        return None
+
+def solve_captcha_tesseract(img_url):
+    """Резервное распознавание через Tesseract."""
+    try:
+        resp = session.get(img_url, timeout=10)
+        if resp.status_code != 200:
+            return None
+        img = Image.open(BytesIO(resp.content))
+        img = img.convert('L')
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.5)
+        img = img.point(lambda x: 0 if x < 140 else 255, '1')
+        img = img.filter(ImageFilter.MedianFilter(size=3))
+        img = img.resize((img.width * 4, img.height * 4), Image.Resampling.LANCZOS)
+        code = pytesseract.image_to_string(img, config='--psm 8 -c tessedit_char_whitelist=0123456789')
+        code = re.sub(r'\D', '', code).strip()
+        if len(code) >= 3:
+            return code[:3]
+        return None
+    except Exception as e:
+        print(f"   ⚠️ Tesseract error: {e}")
+        return None
+
+def solve_captcha(img_url):
+    """Пробует EasyOCR -> OCR.space -> Tesseract."""
+    code = solve_captcha_easyocr(img_url)
+    if code:
+        return code
+    code = solve_captcha_ocrspace(img_url)
+    if code:
+        return code
+    return solve_captcha_tesseract(img_url)
+
 # ==========================================================
-# ПОЛУЧЕНИЕ ПРЯМОЙ ССЫЛКИ (обход капчи)
+# ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений)
 # ==========================================================
+
 def get_direct_link(download_url, retries=3):
     for attempt in range(retries):
         try:
             resp = session.get(download_url, timeout=15)
             if resp.status_code != 200:
                 continue
-
             soup = BeautifulSoup(resp.text, 'html.parser')
             form = soup.find('form')
             if not form:
                 continue
-
-            hidden_inputs = form.find_all('input', type='hidden')
-            form_data = {inp.get('name'): inp.get('value') for inp in hidden_inputs if inp.get('name')}
-
+            hidden = form.find_all('input', type='hidden')
+            form_data = {inp.get('name'): inp.get('value') for inp in hidden if inp.get('name')}
             cap_img = soup.find('img', class_='img_caps')
             if not cap_img:
                 continue
-
             cap_url = urljoin(BASE_URL, cap_img.get('src'))
             code = solve_captcha(cap_url)
             if not code:
+                print(f"   ⚠️ Капча не распознана (попытка {attempt+1})")
                 continue
-
             form_data['com_cod'] = code
-            action_url = urljoin(BASE_URL, form.get('action', download_url))
-
-            post_resp = session.post(action_url, data=form_data, timeout=15)
-
+            action = urljoin(BASE_URL, form.get('action', download_url))
+            post_resp = session.post(action, data=form_data, timeout=15)
             soup_result = BeautifulSoup(post_resp.text, 'html.parser')
-            download_link = soup_result.find('a', href=re.compile(r'\.mp4$|dl\.php\?file='))
-            if download_link:
-                return urljoin(BASE_URL, download_link.get('href'))
-
+            dl_link = soup_result.find('a', href=re.compile(r'\.mp4$|dl\.php\?file='))
+            if dl_link:
+                return urljoin(BASE_URL, dl_link.get('href'))
             mp4_links = re.findall(r'href=[\'"]?([^\'" >]+\.mp4[^\'" >]*)', post_resp.text)
             if mp4_links:
                 return urljoin(BASE_URL, mp4_links[0])
-
         except Exception as e:
-            print(f"   ❌ Ошибка при получении ссылки: {e}")
-
+            print(f"   ❌ Ошибка: {e}")
         time.sleep(2)
     return None
 
-# ==========================================================
-# СКАЧИВАНИЕ ПОСТЕРА
-# ==========================================================
 def download_poster(poster_url, anime_id):
     if not poster_url:
         return None
@@ -112,17 +166,14 @@ def download_poster(poster_url, anime_id):
         if resp.status_code == 200:
             ext = os.path.splitext(urlparse(poster_url).path)[1] or '.jpg'
             filename = f"{anime_id}{ext}"
-            filepath = os.path.join(POSTERS_DIR, filename)
-            with open(filepath, 'wb') as f:
+            path = os.path.join(POSTERS_DIR, filename)
+            with open(path, 'wb') as f:
                 f.write(resp.content)
-            return filepath
+            return path
     except Exception:
         pass
     return None
 
-# ==========================================================
-# ПРОВЕРКА: ЭТО ФИЛЬМ ИЛИ СЕРИАЛ?
-# ==========================================================
 def is_movie(anime_id):
     url = f"{BASE_URL}/anime.php?id={anime_id}"
     try:
@@ -131,12 +182,11 @@ def is_movie(anime_id):
             return False
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
-        review_items = soup.find_all('p', class_='anime_review')
-        for p in review_items:
+        for p in soup.find_all('p', class_='anime_review'):
             text = p.text.strip()
             if 'Тип:' in text:
-                type_value = text.split('Тип:')[-1].strip()
-                if re.search(r'^(Фильм|Movie)', type_value, re.IGNORECASE):
+                type_val = text.split('Тип:')[-1].strip()
+                if re.search(r'^(Фильм|Movie)', type_val, re.IGNORECASE):
                     return True
                 else:
                     return False
@@ -145,9 +195,6 @@ def is_movie(anime_id):
         print(f"   ❌ Ошибка проверки типа {anime_id}: {e}")
         return False
 
-# ==========================================================
-# СБОР СПИСКА АНИМЕ ЗА ГОД (ТОЛЬКО ФИЛЬМЫ)
-# ==========================================================
 def get_movies_list(year, page=1):
     url = f"{BASE_URL}/index.php?f={year}&s=2"
     if page > 1:
@@ -191,9 +238,6 @@ def get_movies_list(year, page=1):
         print(f"   ❌ Ошибка загрузки {url}: {e}")
         return []
 
-# ==========================================================
-# ПОЛУЧЕНИЕ СПИСКА СЕРИЙ (ДЛЯ ФИЛЬМА ОБЫЧНО ТОЛЬКО 1)
-# ==========================================================
 def get_episodes(anime_id):
     url = f"{BASE_URL}/anime.php?id={anime_id}"
     try:
@@ -202,11 +246,11 @@ def get_episodes(anime_id):
             return []
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
-        episode_block = soup.find('div', id='episode_list')
-        if not episode_block:
+        ep_block = soup.find('div', id='episode_list')
+        if not ep_block:
             return []
         episodes = []
-        for div in episode_block.find_all('div'):
+        for div in ep_block.find_all('div'):
             a_tag = div.find('a', href=True)
             if not a_tag:
                 continue
@@ -225,13 +269,10 @@ def get_episodes(anime_id):
         print(f"   ❌ Ошибка загрузки серий {anime_id}: {e}")
         return []
 
-# ==========================================================
-# ОСНОВНАЯ ЛОГИКА
-# ==========================================================
 def main():
     print("=" * 70)
     print("🎬 СБОР АНИМЕ-ФИЛЬМОВ С MP4ANIME.COM (1971–2026)")
-    print("   (используется EasyOCR для капчи)")
+    print("   OCR: EasyOCR (основной) + Tesseract + OCR.space")
     print("=" * 70)
 
     processed = set()
