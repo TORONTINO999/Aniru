@@ -1,9 +1,9 @@
-name: Обновление плейлиста аниме-фильмов
+name: Обновление плейлиста аниме-фильмов55
 
 on:
   schedule:
-    - cron: '0 6 * * 1'   # каждую неделю в 6:00 UTC (в понедельник)
-  workflow_dispatch:      # возможность запуска вручную
+    - cron: '0 6 * * 1'   # каждую неделю в 6:00 UTC
+  workflow_dispatch:      # ручной запуск
 
 jobs:
   update-playlist:
@@ -18,6 +18,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Кэширование моделей EasyOCR
+        uses: actions/cache@v3
+        with:
+          path: ~/.EasyOCR
+          key: easyocr-models-${{ runner.os }}
+          restore-keys: |
+            easyocr-models-${{ runner.os }}
+
+      - name: Установка Tesseract (резерв)
+        run: |
+          sudo apt update
+          sudo apt install -y tesseract-ocr
+
       - name: Установка зависимостей Python
         run: |
           pip install --upgrade pip
@@ -25,11 +38,13 @@ jobs:
 
       - name: Запуск парсера
         run: python parser.py
+        env:
+          OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}  # опционально
 
       - name: Коммит и пуш изменений
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add anime_movies.m3u posters_movies/ progress_movies.json
-          git diff --staged --quiet || git commit -m "Автоматическое обновление плейлиста фильмов $(date -u +'%Y-%m-%d %H:%M:%S')"
+          git add anime_films.m3u posters/ progress.json
+          git diff --staged --quiet || git commit -m "Автообновление плейлиста фильмов $(date -u +'%Y-%m-%d %H:%M:%S')"
           git push
