@@ -3,7 +3,7 @@
 
 """
 Единый скрипт: парсинг сайта + сборка APK
-Запуск: python main.py
+Запуск: python fast_analyzer.py
 Результат: animevost_app.apk
 """
 
@@ -26,7 +26,7 @@ CATEGORY_URL = "/tip/polnometrazhnyy-film/"
 OUTPUT_DIR = "site_dump"
 REQUEST_DELAY = 0.5
 MAX_PAGES = 50
-JSON_FILE = "films.json"          # Имя внутри assets
+JSON_FILE = "films.json"
 TEMPLATE_DIR = "android_template"
 OUTPUT_APK = "animevost_app.apk"
 
@@ -98,7 +98,7 @@ class FilmParser:
 
     def run(self):
         print("🚀 Запуск парсинга (полнометражные фильмы, до 50 страниц)")
-        print("═" * 50)
+        print("=" * 50)
 
         for page in range(1, MAX_PAGES + 1):
             print(f"\n📄 Страница {page}...")
@@ -146,12 +146,13 @@ class FilmParser:
         with open(films_file, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        print("\n" + "═" * 50)
+        print("\n" + "=" * 50)
         print(f"✅ Парсинг завершён. Собрано {len(self.films)} фильмов.")
         print(f"💾 Файл сохранён: {films_file}")
         return films_file
 
-# ==================== СБОРКА APK ====================
+
+# ==================== СОЗДАНИЕ ШАБЛОНА APK ====================
 def create_template():
     """Создаёт минимальный Android-проект"""
     print("📱 Создание шаблона Android-приложения...")
@@ -310,8 +311,8 @@ class M3UGenerator {
 }
 """)
 
-    (java_dir / "MainActivity.kt").write_text("""
-package com.example.animevost
+    # ИСПРАВЛЕННАЯ MainActivity.kt - весь JavaScript экранирован правильно
+    main_activity_code = '''package com.example.animevost
 
 import android.content.Intent
 import android.net.Uri
@@ -365,10 +366,10 @@ class MainActivity : AppCompatActivity() {
             val reader = InputStreamReader(inputStream)
             val response = gson.fromJson(reader, FilmsResponse::class.java)
             allFilms = response.films
-            statusText.text = "Загружено \${allFilms.size} фильмов"
+            statusText.text = "Загружено ${allFilms.size} фильмов"
             setupRecyclerView(allFilms)
         } catch (e: Exception) {
-            Toast.makeText(this, "Ошибка: \${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -384,8 +385,12 @@ class MainActivity : AppCompatActivity() {
                 holder.itemView.findViewById<TextView>(R.id.tvYear).text = film.year
                 holder.itemView.findViewById<TextView>(R.id.tvCategory).text = film.category
                 holder.itemView.setOnClickListener {
-                    selectedFilms.add(film)
-                    Toast.makeText(this@MainActivity, "Выбран: \${film.title}", Toast.LENGTH_SHORT).show()
+                    if (selectedFilms.contains(film)) {
+                        selectedFilms.remove(film)
+                    } else {
+                        selectedFilms.add(film)
+                    }
+                    Toast.makeText(this@MainActivity, if (selectedFilms.contains(film)) "Выбран: ${film.title}" else "Убран: ${film.title}", Toast.LENGTH_SHORT).show()
                 }
             }
             override fun getItemCount(): Int = films.size
@@ -405,8 +410,9 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface
             fun onVideoUrl(url: String?) {
                 runOnUiThread {
-                    if (url != null) {
+                    if (url != null && url != "null") {
                         Toast.makeText(this@MainActivity, "Ссылка получена", Toast.LENGTH_SHORT).show()
+                        // Здесь можно сохранить ссылку для M3U
                     }
                 }
             }
@@ -436,7 +442,7 @@ class MainActivity : AppCompatActivity() {
             Thread {
                 for ((index, film) in selectedFilms.withIndex()) {
                     runOnUiThread {
-                        statusText.text = "\${index+1}/\${selectedFilms.size}: \${film.title}"
+                        statusText.text = "${index+1}/${selectedFilms.size}: ${film.title}"
                         progressBar.max = selectedFilms.size
                         progressBar.progress = index + 1
                     }
@@ -485,7 +491,9 @@ class MainActivity : AppCompatActivity() {
         """
     }
 }
-""")
+'''
+
+    (java_dir / "MainActivity.kt").write_text(main_activity_code)
 
     # Ресурсы (layout)
     res_dir = manifest_dir / "res"
@@ -648,13 +656,13 @@ class MainActivity : AppCompatActivity() {
 </resources>
 """)
 
-    # assets (позже скопируем JSON)
     assets_dir = app_dir / "src" / "main" / "assets"
     assets_dir.mkdir(parents=True)
 
     print("✅ Шаблон создан")
 
 
+# ==================== СБОРКА APK ====================
 def build_apk(json_path):
     """Собирает APK, используя JSON из json_path"""
     print("🔧 Сборка APK...")
@@ -663,13 +671,10 @@ def build_apk(json_path):
         print(f"❌ Файл {json_path} не найден!")
         return False
 
-    # Создаём шаблон
     create_template()
 
-    # Копируем JSON в assets
     shutil.copy(json_path, f"{TEMPLATE_DIR}/app/src/main/assets/{JSON_FILE}")
 
-    # Создаём gradlew
     gradlew_path = f"{TEMPLATE_DIR}/gradlew"
     if not os.path.exists(gradlew_path):
         with open(gradlew_path, "w") as f:
@@ -679,7 +684,6 @@ exec java -cp "app/build.gradle" org.gradle.wrapper.GradleWrapperMain "$@"
 """)
         os.chmod(gradlew_path, 0o755)
 
-    # Создаём gradle wrapper
     wrapper_dir = Path(TEMPLATE_DIR) / "gradle" / "wrapper"
     wrapper_dir.mkdir(parents=True)
     (wrapper_dir / "gradle-wrapper.properties").write_text("""
@@ -696,9 +700,8 @@ zipStorePath=wrapper/dists
         with open(wrapper_dir / "gradle-wrapper.jar", "wb") as f:
             f.write(wrapper_jar.content)
     except:
-        print("⚠️ Не удалось загрузить gradle-wrapper.jar, используем встроенный")
+        print("⚠️ Не удалось загрузить gradle-wrapper.jar")
 
-    # Запускаем сборку
     print("🏗️ Компиляция APK (это займёт несколько минут)...")
     os.chdir(TEMPLATE_DIR)
     result = subprocess.run(["./gradlew", "assembleDebug"], capture_output=True, text=True)
@@ -722,9 +725,8 @@ zipStorePath=wrapper/dists
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ====================
 def main():
     print("🚀 ЗАПУСК ЕДИНОГО СКРИПТА")
-    print("═" * 60)
+    print("=" * 60)
 
-    # 1. Парсинг
     parser = FilmParser()
     json_path = parser.run()
 
@@ -732,12 +734,12 @@ def main():
         print("❌ Парсинг не дал результата. Сборка отменена.")
         sys.exit(1)
 
-    # 2. Сборка APK
     success = build_apk(json_path)
     if success:
         print("\n✅ ГОТОВО!")
         print(f"📱 APK файл: {OUTPUT_APK}")
-        print("📦 Размер: {:.2f} MB".format(os.path.getsize(OUTPUT_APK) / (1024 * 1024)))
+        if os.path.exists(OUTPUT_APK):
+            print("📦 Размер: {:.2f} MB".format(os.path.getsize(OUTPUT_APK) / (1024 * 1024)))
     else:
         print("\n❌ СБОРКА НЕ УДАЛАСЬ")
         sys.exit(1)
