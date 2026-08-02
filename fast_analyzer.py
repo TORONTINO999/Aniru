@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-ЕДИНЫЙ СКРИПТ: Парсинг AnimeVost + Сборка Android APK
-1. Парсит до 50 страниц полнометражных фильмов.
-2. Сохраняет данные в site_dump/films.json
-3. Генерирует Android-проект с встроенным JSON и WebView-экстрактором ссылок.
-4. Компилирует APK через Gradle Wrapper.
-"""
-
 import os
 import sys
 import json
@@ -27,7 +19,6 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "beautifulsoup4", "lxml", "requests"])
     from bs4 import BeautifulSoup
 
-# ==================== КОНФИГУРАЦИЯ ====================
 BASE_URL = "https://v13.vost.pw"
 CATEGORY_URL = "/tip/polnometrazhnyy-film/"
 OUTPUT_DIR = Path("site_dump")
@@ -37,7 +28,6 @@ OUTPUT_APK = "animevost_app.apk"
 MAX_PAGES = 50
 REQUEST_DELAY = 0.3
 
-# ==================== ЧАСТЬ 1: ПАРСИНГ ====================
 class FilmParser:
     def __init__(self):
         OUTPUT_DIR.mkdir(exist_ok=True)
@@ -65,31 +55,19 @@ class FilmParser:
 
         page_films = []
         for article in articles:
-            # 1. Ссылка на фильм (ищем <a> с href, содержащим /число-название.html)
             a_tag = article.find("a", href=re.compile(r"/\d+-.*\.html$"))
             if not a_tag or not a_tag.get("href"):
                 continue
-            
             film_url = urljoin(BASE_URL, a_tag["href"])
-            
-            # 2. ID фильма
             id_match = re.search(r"/(\d+)-", a_tag["href"])
             film_id = id_match.group(1) if id_match else "0"
-
-            # 3. Название (из <h2>)
             h2 = article.find("h2")
             title = h2.text.strip() if h2 else "Без названия"
-
-            # 4. Год (ищем <a> с /god/XXXX/)
             year_tag = article.find("a", href=re.compile(r"/god/\d{4}/"))
             year = year_tag.text.strip() if year_tag else "неизвестно"
-
-            # 5. Постер (из style="background-image: url('...')")
             style = article.get("style", "")
             poster_match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
             poster = urljoin(BASE_URL, poster_match.group(1)) if poster_match else ""
-
-            # Проверка на дубликаты
             if not any(f["url"] == film_url for f in self.films):
                 page_films.append({
                     "id": film_id,
@@ -99,40 +77,30 @@ class FilmParser:
                     "url": film_url,
                     "category": "polnometrazhnyy-film"
                 })
-
         return page_films
 
     def run(self):
         print("🚀 ЭТАП 1: Парсинг сайта (до 50 страниц)")
         print("═" * 60)
-
         for page in range(1, MAX_PAGES + 1):
             url = urljoin(BASE_URL, CATEGORY_URL) if page == 1 else urljoin(BASE_URL, f"{CATEGORY_URL}page/{page}/")
             print(f"📄 Страница {page}...", end=" ")
-            
             html = self.fetch_page(url)
             if not html:
                 print("⏹ Ошибка или конец.")
                 break
-
             films = self.parse_page(html, page)
             if not films:
                 print("ℹ️ Нет фильмов. Конец пагинации.")
                 break
-
             self.films.extend(films)
             print(f"✅ +{len(films)} (Всего: {len(self.films)})")
-            
-            # Проверка наличия следующей страницы
             soup = BeautifulSoup(html, "lxml")
             next_page_pattern = f"{CATEGORY_URL}page/{page+1}/"
             if not soup.find("a", href=re.compile(re.escape(next_page_pattern))):
                 print("🏁 Достигнут конец пагинации.")
                 break
-
             time.sleep(REQUEST_DELAY)
-
-        # Сохранение
         result = {
             "timestamp": datetime.now().isoformat(),
             "total": len(self.films),
@@ -140,12 +108,9 @@ class FilmParser:
         }
         with open(JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
-
         print(f"\n💾 Данные сохранены: {JSON_FILE} ({len(self.films)} фильмов)")
         return len(self.films) > 0
 
-
-# ==================== ЧАСТЬ 2: СБОРКА APK ====================
 class APKBuilder:
     def __init__(self):
         self.project_dir = TEMPLATE_DIR
@@ -154,8 +119,6 @@ class APKBuilder:
         print("📱 ЭТАП 2: Генерация Android-шаблона...")
         if self.project_dir.exists():
             shutil.rmtree(self.project_dir)
-        
-        # Структура папок
         app_dir = self.project_dir / "app" / "src" / "main"
         (app_dir / "java" / "com" / "example" / "animevost").mkdir(parents=True)
         (app_dir / "res" / "layout").mkdir(parents=True)
@@ -163,21 +126,18 @@ class APKBuilder:
         (app_dir / "res" / "values").mkdir(parents=True)
         (app_dir / "assets").mkdir(parents=True)
 
-        # 1. build.gradle (Project)
         (self.project_dir / "build.gradle").write_text("""
 buildscript {
     repositories { google(); mavenCentral() }
     dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
 }
 """)
-        # 2. settings.gradle
         (self.project_dir / "settings.gradle").write_text("""
 pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
 dependencyResolutionManagement { repositories { google(); mavenCentral() } }
 rootProject.name = "AnimeVost"
 include ':app'
 """)
-        # 3. app/build.gradle
         (app_dir.parent / "build.gradle").write_text("""
 plugins { id 'com.android.application' }
 android {
@@ -197,7 +157,6 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.10.1'
 }
 """)
-        # 4. AndroidManifest.xml
         (app_dir / "AndroidManifest.xml").write_text("""<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
@@ -212,7 +171,7 @@ dependencies {
     </application>
 </manifest>
 """)
-        # 5. MainActivity.kt (с исправленными строковыми шаблонами Kotlin)
+        # Исправленный блок MainActivity.kt с \x22\x22\x22 вместо """
         (app_dir / "java" / "com" / "example" / "animevost" / "MainActivity.kt").write_text("""
 package com.example.animevost
 import android.os.Bundle
@@ -345,7 +304,7 @@ class MainActivity : AppCompatActivity() {
                         progressBar.progress = index + 1
                     }
                     runOnUiThread { webView.loadUrl(film.url) }
-                    Thread.sleep(3000) // Ждем загрузки JS плеера
+                    Thread.sleep(3000)
                 }
                 runOnUiThread {
                     progressBar.visibility = View.GONE
@@ -380,7 +339,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val JS_EXTRACTOR = """
+        private const val JS_EXTRACTOR = \x22\x22\x22
             (function() {
                 setTimeout(function() {
                     var video = document.querySelector('video');
@@ -390,11 +349,10 @@ class MainActivity : AppCompatActivity() {
                     Android.onVideoUrl(null);
                 }, 2000);
             })();
-        """
+        \x22\x22\x22
     }
 }
 """)
-        # 6. Layouts
         (app_dir / "res" / "layout" / "activity_main.xml").write_text("""<?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent"
@@ -446,8 +404,6 @@ class MainActivity : AppCompatActivity() {
         print("📦 Настройка Gradle Wrapper...")
         wrapper_dir = self.project_dir / "gradle" / "wrapper"
         wrapper_dir.mkdir(parents=True)
-        
-        # Скачиваем настоящий gradle-wrapper.jar
         jar_url = "https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar"
         jar_path = wrapper_dir / "gradle-wrapper.jar"
         if not jar_path.exists():
@@ -459,7 +415,6 @@ class MainActivity : AppCompatActivity() {
             except Exception as e:
                 print(f"⚠️ Не удалось скачать wrapper.jar: {e}")
                 return False
-
         (wrapper_dir / "gradle-wrapper.properties").write_text("""
 distributionBase=GRADLE_USER_HOME
 distributionPath=wrapper/dists
@@ -467,7 +422,6 @@ distributionUrl=https\\://services.gradle.org/distributions/gradle-8.4-bin.zip
 zipStoreBase=GRADLE_USER_HOME
 zipStorePath=wrapper/dists
 """)
-        # Правильный gradlew скрипт
         gradlew_path = self.project_dir / "gradlew"
         gradlew_path.write_text("""#!/bin/sh
 APP_HOME=$(cd "$(dirname "$0")" && pwd)
@@ -479,14 +433,11 @@ exec java -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wr
     def build(self):
         print("🏗️ ЭТАП 3: Компиляция APK (может занять 3-5 минут)...")
         shutil.copy(JSON_FILE, self.project_dir / "app" / "src" / "main" / "assets" / "films.json")
-        
         if not self.setup_gradle():
             return False
-
         os.chdir(self.project_dir)
         try:
-            # Запускаем сборку
-            result = subprocess.run(["./gradlew", "assembleDebug"], capture_output=True, text=True, check=True)
+            subprocess.run(["./gradlew", "assembleDebug"], capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as e:
             print("❌ Ошибка сборки Gradle:")
             print(e.stderr)
@@ -494,7 +445,6 @@ exec java -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wr
             return False
         finally:
             os.chdir("..")
-
         apk_path = self.project_dir / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
         if apk_path.exists():
             shutil.copy(apk_path, OUTPUT_APK)
@@ -503,27 +453,19 @@ exec java -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wr
             return True
         return False
 
-
-# ==================== ГЛАВНЫЙ ЗАПУСК ====================
 def main():
     print("=" * 60)
     print(" 🎬 UNIFIED ANIMEVOST PARSER & APK BUILDER v2.0")
     print("=" * 60)
-
-    # Проверка Java
     try:
         subprocess.run(["java", "-version"], capture_output=True, check=True)
     except (FileNotFoundError, subprocess.CalledProcessError):
         print("❌ ОШИБКА: Java не найдена в системе! Установите JDK 17+ для сборки APK.")
         sys.exit(1)
-
-    # Шаг 1: Парсинг
     parser = FilmParser()
     if not parser.run():
         print("❌ Не удалось собрать данные. Завершение.")
         sys.exit(1)
-
-    # Шаг 2: Сборка
     builder = APKBuilder()
     if builder.build():
         print("\n🎉 ВСЁ ГОТОВО! Установите animevost_app.apk на Android-устройство.")
