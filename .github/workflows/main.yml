@@ -7,6 +7,10 @@ on:
   push:
     branches: [ main ]
 
+env:
+  # Явно указываем использовать Node 24 для всех JavaScript-экшенов
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -61,7 +65,6 @@ jobs:
           path: analyzer/site_dump/films.json
           retention-days: 7
 
-  # ========== ВТОРАЯ ЧАСТЬ: СБОРКА APK ==========
   build-apk:
     needs: analyze
     runs-on: ubuntu-latest
