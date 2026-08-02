@@ -2,8 +2,8 @@ name: Build AnimeVost APK
 
 on:
   schedule:
-    - cron: '0 0 * * 0'
-  workflow_dispatch:
+    - cron: '0 0 * * 0'      # Каждое воскресенье в 00:00 UTC
+  workflow_dispatch:          # Ручной запуск
   push:
     branches: [ main, master ]
 
@@ -11,33 +11,50 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    
     steps:
+      # 1. Клонируем репозиторий
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Устанавливаем Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
+      # 3. Устанавливаем зависимости Python
       - name: Install Python dependencies
         run: pip install requests beautifulsoup4 lxml
 
+      # 4. Устанавливаем Java (нужна для сборки Android)
       - name: Setup Java (JDK 17)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
+      # 5. Устанавливаем Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # 6. Генерируем Android-шаблон (все файлы проекта)
+      - name: Generate Android Template
+        run: |
+          echo "🚀 Генерация Android-шаблона..."
+          chmod +x generate_template.py
+          python generate_template.py
+        continue-on-error: false
+
+      # 7. Запускаем парсинг и сборку APK
       - name: Run Unified Parser & APK Builder
         run: |
           echo "🚀 Запуск единого скрипта парсинга и сборки..."
           chmod +x unified_builder.py
           python unified_builder.py
+        continue-on-error: false
 
+      # 8. Загружаем готовый APK как артефакт
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
