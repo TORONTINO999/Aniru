@@ -1,112 +1,113 @@
-name: Build AnimeVost APK jadx345
+name: Build AnimeVost APK
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   schedule:
-    - cron: '0 0 * * 0'   # Каждое воскресенье в 00:00
-  workflow_dispatch:      # Ручной запуск из интерфейса GitHub
+    - cron: '0 0 * * 0'   # Раз в неделю
+  workflow_dispatch:      # Ручной запуск
+  push:
+    branches: [ main ]
 
 jobs:
-  build:
+  analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
+    outputs:
+      has_data: ${{ steps.check.outputs.has_data }}
     steps:
-      # 1. Клонируем репозиторий
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Устанавливаем Python
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
-      # 3. Устанавливаем зависимости для анализатора
-      - name: Install analyzer dependencies
+      - name: Install dependencies
         run: |
           cd analyzer
           pip install -r requirements.txt
 
-      # 4. Запускаем анализатор (первый скрипт)
-      - name: Run analyzer (parse site)
+      - name: Run full analyzer
+        id: analyze
         run: |
           cd analyzer
           python analyze_animevost.py
-        env:
-          PYTHONUNBUFFERED: 1
-
-      # 5. Проверяем, что JSON создан
-      - name: Verify JSON file
-        run: |
-          if [ ! -f analyzer/films_structure.json ]; then
-            echo "❌ JSON файл не создан!"
-            exit 1
+          # Проверяем, создался ли файл
+          if [ -f site_dump/films.json ]; then
+            echo "has_data=true" >> $GITHUB_OUTPUT
           fi
-          echo "✅ JSON файл создан:"
-          ls -la analyzer/films_structure.json
 
-      # 6. Копируем JSON в папку сборщика
-      - name: Copy JSON to builder
+      - name: Check if data exists
+        id: check
         run: |
-          cp analyzer/films_structure.json builder/
-          echo "✅ JSON скопирован в builder/"
+          if [ -f analyzer/site_dump/films.json ]; then
+            echo "has_data=true" >> $GITHUB_OUTPUT
+            echo "✅ Данные успешно собраны"
+          else
+            echo "❌ Данные не собраны"
+            echo "has_data=false" >> $GITHUB_OUTPUT
+          fi
 
-      # 7. Устанавливаем зависимости для сборщика
-      - name: Install builder dependencies
+      - name: Upload full site dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-dump
+          path: analyzer/site_dump/
+          retention-days: 7
+
+      - name: Upload films.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: films-data
+          path: analyzer/site_dump/films.json
+          retention-days: 7
+
+  # ========== ВТОРАЯ ЧАСТЬ: СБОРКА APK ==========
+  build-apk:
+    needs: analyze
+    runs-on: ubuntu-latest
+    if: needs.analyze.outputs.has_data == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download films.json
+        uses: actions/download-artifact@v4
+        with:
+          name: films-data
+          path: android_app/app/src/main/assets/
+
+      - name: Download full site dump
+        uses: actions/download-artifact@v4
+        with:
+          name: site-dump
+          path: android_app/app/src/main/assets/site_dump/
+
+      - name: Verify files
         run: |
-          cd builder
-          pip install -r requirements.txt
+          echo "📂 Проверка файлов в assets:"
+          ls -la android_app/app/src/main/assets/
+          echo "📂 Проверка site_dump:"
+          ls -la android_app/app/src/main/assets/site_dump/
 
-      # 8. Запускаем сборщик APK (второй скрипт)
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Build APK
         run: |
-          cd builder
-          python build_apk.py
-        env:
-          PYTHONUNBUFFERED: 1
-          # Если нужен Android SDK, он будет установлен автоматически
+          cd android_app
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
-      # 9. Проверяем, что APK создан
-      - name: Verify APK file
-        run: |
-          if [ ! -f builder/animevost_app.apk ]; then
-            echo "❌ APK файл не создан!"
-            exit 1
-          fi
-          echo "✅ APK файл создан:"
-          ls -la builder/animevost_app.apk
-
-      # 10. Загружаем APK как артефакт
-      - name: Upload APK as artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: animevost-app
-          path: builder/animevost_app.apk
-          retention-days: 30  # Храним артефакт 30 дней
-
-      # 11. Загружаем JSON как артефакт (для отладки)
-      - name: Upload JSON as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: films-structure
-          path: builder/films_structure.json
-          retention-days: 7
-
-      # 12. Создаём релиз (опционально)
-      - name: Create Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          name: "AnimeVost APK ${{ github.run_number }}"
-          tag_name: "v${{ github.run_number }}"
-          files: builder/animevost_app.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: android_app/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
