@@ -2,19 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-Оптимизированный анализатор только для раздела полнометражных фильмов.
-Собирает: ID, название, год, постер, ссылку, категорию.
-Сохраняет в site_dump/films.json
+Парсер для сайта v13.vost.pw (без JavaScript)
+Использует регулярные выражения для прямого парсинга HTML
 """
 
 import re
 import json
 import time
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urljoin
 
 BASE_URL = "https://v13.vost.pw"
 CATEGORY_URL = "/tip/polnometrazhnyy-film/"
@@ -22,7 +20,7 @@ OUTPUT_DIR = "site_dump"
 REQUEST_DELAY = 0.5
 MAX_PAGES = 50
 
-class FastFilmParser:
+class FilmParser:
     def __init__(self):
         self.output_dir = Path(OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)
@@ -43,47 +41,44 @@ class FastFilmParser:
             return None
 
     def parse_films_from_page(self, html, page_num):
-        soup = BeautifulSoup(html, "lxml")
+        if not html:
+            return []
         
         # Ищем все article с классом post
-        articles = soup.find_all("article", class_="post")
+        articles = re.findall(r'<article\s+class="post"[^>]*>(.*?)</article>', html, re.DOTALL)
+        
         if not articles:
             print(f"  ⚠️ На странице {page_num} нет фильмов.")
             return []
 
         page_films = []
-        for article in articles:
-            # 1. Ссылка на фильм (внутри span a)
-            span = article.find("span")
-            if not span:
+        for article_html in articles:
+            # 1. Ссылка на фильм
+            href_match = re.search(r'<a\s+href="([^"]+)"', article_html)
+            if not href_match:
                 continue
-            a_tag = span.find("a")
-            if not a_tag or not a_tag.get("href"):
-                continue
-            
-            href = a_tag.get("href")
+            href = href_match.group(1)
             film_url = urljoin(BASE_URL, href)
             
-            # 2. ID фильма из URL
+            # 2. ID фильма
             id_match = re.search(r"/(\d+)-", href)
             film_id = id_match.group(1) if id_match else "0"
             
-            # 3. Название (из h2)
-            h2 = article.find("h2")
-            title = h2.text.strip() if h2 else "Без названия"
+            # 3. Название
+            title_match = re.search(r'<h2>(.*?)</h2>', article_html, re.DOTALL)
+            title = title_match.group(1).strip() if title_match else "Без названия"
+            title = re.sub(r'<[^>]+>', '', title)
             
-            # 4. Год (из тега a с href содержащим /god/)
-            year_tag = article.find("a", href=re.compile(r"/god/\d{4}/"))
-            year = year_tag.text.strip() if year_tag else "неизвестно"
+            # 4. Год
+            year_match = re.search(r'<a\s+href="[^"]*/god/(\d{4})/[^"]*">', article_html)
+            year = year_match.group(1) if year_match else "неизвестно"
             
-            # 5. Постер (из style="background-image: url('...')")
-            style = article.get("style", "")
-            poster_match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
-            poster = poster_match.group(1) if poster_match else ""
+            # 5. Постер (из style)
+            style_match = re.search(r'style="[^"]*background-image:\s*url\([\'"]?([^\'"\)]+)[\'"]?\)', article_html, re.IGNORECASE)
+            poster = style_match.group(1) if style_match else ""
             if poster and not poster.startswith("http"):
                 poster = urljoin(BASE_URL, poster)
             
-            # Проверка на дубликаты
             if not any(f["url"] == film_url for f in self.films):
                 page_films.append({
                     "id": film_id,
@@ -97,7 +92,7 @@ class FastFilmParser:
         return page_films
 
     def run(self):
-        print("🚀 Запуск анализатора (только полнометражные фильмы)")
+        print("🚀 Запуск парсера (регулярные выражения)")
         print("═" * 50)
 
         for page in range(1, MAX_PAGES + 1):
@@ -110,7 +105,7 @@ class FastFilmParser:
 
             html = self.fetch_page(url)
             if not html:
-                print(f"  ⏹ Достигнут конец или ошибка. Останавливаемся на странице {page}.")
+                print(f"  ⏹ Ошибка загрузки. Останавливаемся на странице {page}.")
                 break
 
             films = self.parse_films_from_page(html, page)
@@ -121,16 +116,12 @@ class FastFilmParser:
             self.films.extend(films)
             print(f"  ✅ Найдено {len(films)} фильмов (всего {len(self.films)})")
 
-            # Проверяем наличие следующей страницы
-            soup = BeautifulSoup(html, "lxml")
-            next_page_pattern = f"{CATEGORY_URL}page/{page+1}/"
-            if not soup.find("a", href=re.compile(re.escape(next_page_pattern))):
+            if not re.search(rf'href="[^"]*{CATEGORY_URL}page/{page+1}/', html):
                 print(f"  🏁 Достигнут конец пагинации на странице {page}.")
                 break
 
             time.sleep(REQUEST_DELAY)
 
-        # Сохраняем результат
         result = {
             "timestamp": datetime.now().isoformat(),
             "total": len(self.films),
@@ -147,5 +138,5 @@ class FastFilmParser:
         return len(self.films) > 0
 
 if __name__ == "__main__":
-    parser = FastFilmParser()
+    parser = FilmParser()
     parser.run()
