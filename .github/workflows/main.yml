@@ -1,58 +1,112 @@
-name: Обновление плейлиста аниме-фильмов
+name: Build AnimeVost APK jadx345
 
 on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   schedule:
-    - cron: '0 6 * * 1'   # каждую неделю в 6:00 UTC (понедельник)
-  workflow_dispatch:      # ручной запуск
+    - cron: '0 0 * * 0'   # Каждое воскресенье в 00:00
+  workflow_dispatch:      # Ручной запуск из интерфейса GitHub
 
 jobs:
-  update-playlist:
+  build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
+    
     steps:
-      - name: Клонирование репозитория
+      # 1. Клонируем репозиторий
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Установка Python
+      # 2. Устанавливаем Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
+          cache: 'pip'
 
-      - name: Кэширование моделей EasyOCR
-        uses: actions/cache@v4
-        with:
-          path: ~/.EasyOCR
-          key: easyocr-models-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            easyocr-models-${{ runner.os }}
-
-      - name: Кэширование пакетов Python
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            pip-${{ runner.os }}
-
-      - name: Установка Tesseract (резерв)
+      # 3. Устанавливаем зависимости для анализатора
+      - name: Install analyzer dependencies
         run: |
-          sudo apt update
-          sudo apt install -y tesseract-ocr
-
-      - name: Установка зависимостей Python
-        run: |
-          pip install --upgrade pip
+          cd analyzer
           pip install -r requirements.txt
 
-      - name: Запуск парсера
-        run: python parser.py
-        env:
-          OCR_SPACE_KEY: ${{ secrets.OCR_SPACE_KEY }}  # опционально
-
-      - name: Коммит и пуш изменений
+      # 4. Запускаем анализатор (первый скрипт)
+      - name: Run analyzer (parse site)
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add anime_films.m3u posters/ progress.json
-          git diff --staged --quiet || git commit -m "Автообновление плейлиста фильмов $(date -u +'%Y-%m-%d %H:%M:%S')"
-          git push
+          cd analyzer
+          python analyze_animevost.py
+        env:
+          PYTHONUNBUFFERED: 1
+
+      # 5. Проверяем, что JSON создан
+      - name: Verify JSON file
+        run: |
+          if [ ! -f analyzer/films_structure.json ]; then
+            echo "❌ JSON файл не создан!"
+            exit 1
+          fi
+          echo "✅ JSON файл создан:"
+          ls -la analyzer/films_structure.json
+
+      # 6. Копируем JSON в папку сборщика
+      - name: Copy JSON to builder
+        run: |
+          cp analyzer/films_structure.json builder/
+          echo "✅ JSON скопирован в builder/"
+
+      # 7. Устанавливаем зависимости для сборщика
+      - name: Install builder dependencies
+        run: |
+          cd builder
+          pip install -r requirements.txt
+
+      # 8. Запускаем сборщик APK (второй скрипт)
+      - name: Build APK
+        run: |
+          cd builder
+          python build_apk.py
+        env:
+          PYTHONUNBUFFERED: 1
+          # Если нужен Android SDK, он будет установлен автоматически
+
+      # 9. Проверяем, что APK создан
+      - name: Verify APK file
+        run: |
+          if [ ! -f builder/animevost_app.apk ]; then
+            echo "❌ APK файл не создан!"
+            exit 1
+          fi
+          echo "✅ APK файл создан:"
+          ls -la builder/animevost_app.apk
+
+      # 10. Загружаем APK как артефакт
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: animevost-app
+          path: builder/animevost_app.apk
+          retention-days: 30  # Храним артефакт 30 дней
+
+      # 11. Загружаем JSON как артефакт (для отладки)
+      - name: Upload JSON as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: films-structure
+          path: builder/films_structure.json
+          retention-days: 7
+
+      # 12. Создаём релиз (опционально)
+      - name: Create Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "AnimeVost APK ${{ github.run_number }}"
+          tag_name: "v${{ github.run_number }}"
+          files: builder/animevost_app.apk
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
