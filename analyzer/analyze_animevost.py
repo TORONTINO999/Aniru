@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Анализатор сайта AnimeVost (v13.vost.pw)
-Собирает все фильмы со всех категорий и сохраняет в JSON.
-
-Запуск: python analyze_animevost.py
-Результат: films_structure.json
-"""
-
+import os
 import json
-import re
 import time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
+from pathlib import Path
 
+# ==================== КОНФИГУРАЦИЯ ====================
 BASE_URL = "https://v13.vost.pw"
+SITE_DUMP_DIR = "site_dump"  # Папка для полной структуры
+# ВАЖНО: Этот путь будет использоваться в GitHub Actions
+FILMS_JSON = f"{SITE_DUMP_DIR}/films.json"
+STRUCTURE_JSON = f"{SITE_DUMP_DIR}/site_structure.json"
+
+# Категории для обхода
 CATEGORIES = [
     "/tip/polnometrazhnyy-film/",
     "/tip/tv/",
@@ -27,9 +27,6 @@ CATEGORIES = [
     "/tip/korotkometrazhnyy-film/",
     "/tip/dunkhua/"
 ]
-REQUEST_DELAY = 1
-MAX_PAGES = 100
-OUTPUT_FILE = "films_structure.json"
 
 def fetch_html(url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -73,60 +70,79 @@ def parse_category_page(html, category_url):
         })
     return films
 
-def parse_category(category_url):
-    print(f"\n📂 Анализ категории: {category_url}")
+def analyze_category(category_url):
     all_films = []
     page = 1
-    while page <= MAX_PAGES:
+    while page <= 100:
         url = category_url if page == 1 else f"{category_url}page/{page}/"
-        print(f"  📄 Страница {page}...")
         html = fetch_html(url)
         if not html:
             break
         films = parse_category_page(html, category_url)
         if not films:
-            print(f"  ℹ️ Страница {page} пуста – конец.")
             break
         all_films.extend(films)
-        print(f"  ✅ Найдено {len(films)} (всего {len(all_films)})")
         if page == 1:
             soup = BeautifulSoup(html, "lxml")
-            pager = soup.select_one(".pager")
-            if not pager or not pager.find("a", href=re.compile(r"/page/2/")):
+            if not soup.select_one(f"a[href*='{category_url}page/2/']"):
                 break
         else:
             soup = BeautifulSoup(html, "lxml")
             if not soup.select_one(f"a[href*='{category_url}page/{page+1}/']"):
-                print(f"  🏁 Достигнут конец пагинации.")
                 break
         page += 1
-        time.sleep(REQUEST_DELAY)
+        time.sleep(1)
     return all_films
 
 def main():
-    print("🚀 ЗАПУСК ПОЛНОГО ПАРСИНГА САЙТА")
+    print("🚀 ЗАПУСК ПОЛНОГО АНАЛИЗА САЙТА")
     print("═" * 50)
+    
+    # Создаём папку
+    Path(SITE_DUMP_DIR).mkdir(exist_ok=True)
+    
     all_films = []
+    categories_data = {}
+    
     for cat in CATEGORIES:
         cat_url = urljoin(BASE_URL, cat)
-        films = parse_category(cat_url)
+        print(f"\n📂 Анализ категории: {cat}")
+        films = analyze_category(cat_url)
         all_films.extend(films)
-        print(f"✅ Категория {cat} завершена. Собрано {len(films)} фильмов.")
-        time.sleep(REQUEST_DELAY * 2)
+        categories_data[cat.strip("/").split("/")[-1]] = {
+            "url": cat_url,
+            "count": len(films),
+            "films": films
+        }
+        print(f"   ✅ Найдено {len(films)} фильмов")
     
+    # Сохраняем все фильмы
     all_films_sorted = sorted(all_films, key=lambda x: (int(x["year"]) if x["year"].isdigit() else 9999, x["title"]))
     output = {
         "timestamp": datetime.now().isoformat(),
         "total": len(all_films_sorted),
+        "categories": categories_data,
         "films": all_films_sorted
     }
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    
+    # Сохраняем в папку site_dump
+    with open(FILMS_JSON, "w", encoding="utf-8") as f:
+        json.dump(all_films_sorted, f, indent=2, ensure_ascii=False)
+    
+    with open(STRUCTURE_JSON, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
     
+    # Дополнительно сохраняем отдельные файлы для удобства
+    with open(f"{SITE_DUMP_DIR}/categories.json", "w", encoding="utf-8") as f:
+        json.dump(categories_data, f, indent=2, ensure_ascii=False)
+    
     print("\n" + "═" * 50)
-    print(f"📊 ВСЕГО СОБРАНО ФИЛЬМОВ: {len(all_films_sorted)}")
-    print(f"💾 Результат сохранён в {OUTPUT_FILE}")
-    print("✅ АНАЛИЗ ЗАВЕРШЁН")
+    print(f"✅ АНАЛИЗ ЗАВЕРШЁН")
+    print(f"📊 Всего фильмов: {len(all_films_sorted)}")
+    print(f"📁 Данные сохранены в папке: {SITE_DUMP_DIR}/")
+    print(f"   - films.json (все фильмы)")
+    print(f"   - site_structure.json (полная структура)")
+    print(f"   - categories.json (категории)")
 
 if __name__ == "__main__":
     main()
