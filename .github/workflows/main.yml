@@ -1,15 +1,11 @@
-name: Build AnimeVost APK_66
+name: Build AnimeVost APK
 
 on:
   schedule:
-    - cron: '0 0 * * 0'   # Каждое воскресенье в 00:00 UTC
+    - cron: '0 0 * * 0'
   workflow_dispatch:
   push:
     branches: [ main, master ]
-
-# Переменная окружения больше не нужна
-# env:
-#   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-apk:
@@ -35,12 +31,6 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      # (Опционально) Если в будущем понадобится Node для скриптов
-      # - name: Setup Node.js
-      #   uses: actions/setup-node@v4
-      #   with:
-      #     node-version: '20'   # или '22'
 
       - name: Run Unified Parser & APK Builder
         run: |
