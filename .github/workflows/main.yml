@@ -1,57 +1,76 @@
-name: Build AnimeVost APK
+name: Build AnimeVost APK265
 
 on:
   schedule:
-    - cron: '0 0 * * 0'   # Раз в неделю
+    - cron: '0 0 * * 0'   # Каждое воскресенье в 00:00
   workflow_dispatch:      # Ручной запуск
   push:
-    branches: [ main ]
+    branches: [ main, master ]
 
 env:
-  # Явно указываем использовать Node 24 для всех JavaScript-экшенов
+  # Используем Node 24 для всех JavaScript-экшенов
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ==================== JOB 1: АНАЛИЗ САЙТА ====================
   analyze:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
     outputs:
-      has_data: ${{ steps.check.outputs.has_data }}
+      has_data: ${{ steps.check_data.outputs.has_data }}
+      films_count: ${{ steps.check_data.outputs.films_count }}
+    
     steps:
+      # 1. Клонируем репозиторий
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Устанавливаем Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
+      # 3. Устанавливаем зависимости
       - name: Install dependencies
         run: |
-          cd analyzer
-          pip install -r requirements.txt
+          pip install requests beautifulsoup4 lxml
 
-      - name: Run full analyzer
+      # 4. Создаём папку для анализатора
+      - name: Create analyzer directory
+        run: |
+          mkdir -p analyzer
+          cat > analyzer/analyze_animevost.py << 'EOF'
+          # ВСТАВЬТЕ СЮДА ВЕСЬ КОД АНАЛИЗАТОРА
+          EOF
+
+      # 5. Запускаем анализатор
+      - name: Run analyzer
         id: analyze
         run: |
           cd analyzer
           python analyze_animevost.py
-          # Проверяем, создался ли файл
-          if [ -f site_dump/films.json ]; then
-            echo "has_data=true" >> $GITHUB_OUTPUT
-          fi
+          echo "✅ Анализатор завершил работу"
 
-      - name: Check if data exists
-        id: check
+      # 6. Проверяем результат
+      - name: Check data
+        id: check_data
         run: |
           if [ -f analyzer/site_dump/films.json ]; then
+            FILMS_COUNT=$(cat analyzer/site_dump/films.json | python -c "import sys, json; print(len(json.load(sys.stdin)))")
             echo "has_data=true" >> $GITHUB_OUTPUT
-            echo "✅ Данные успешно собраны"
+            echo "films_count=$FILMS_COUNT" >> $GITHUB_OUTPUT
+            echo "✅ Найдено $FILMS_COUNT фильмов"
           else
-            echo "❌ Данные не собраны"
             echo "has_data=false" >> $GITHUB_OUTPUT
+            echo "❌ Файл films.json не создан!"
+            exit 1
           fi
 
-      - name: Upload full site dump
+      # 7. Загружаем артефакты
+      - name: Upload site dump
         uses: actions/upload-artifact@v4
         with:
           name: site-dump
@@ -65,19 +84,36 @@ jobs:
           path: analyzer/site_dump/films.json
           retention-days: 7
 
+      - name: Upload site_structure.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-structure
+          path: analyzer/site_dump/site_structure.json
+          retention-days: 7
+
+  # ==================== JOB 2: СБОРКА APK ====================
   build-apk:
     needs: analyze
     runs-on: ubuntu-latest
     if: needs.analyze.outputs.has_data == 'true'
+    timeout-minutes: 30
     
     steps:
+      # 1. Клонируем репозиторий (для Android-проекта)
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Скачиваем данные из артефактов
       - name: Download films.json
         uses: actions/download-artifact@v4
         with:
           name: films-data
+          path: android_app/app/src/main/assets/
+
+      - name: Download site structure
+        uses: actions/download-artifact@v4
+        with:
+          name: site-structure
           path: android_app/app/src/main/assets/
 
       - name: Download full site dump
@@ -86,31 +122,58 @@ jobs:
           name: site-dump
           path: android_app/app/src/main/assets/site_dump/
 
+      # 3. Проверяем файлы
       - name: Verify files
         run: |
           echo "📂 Проверка файлов в assets:"
-          ls -la android_app/app/src/main/assets/
+          ls -la android_app/app/src/main/assets/ || echo "❌ Папка assets не найдена"
           echo "📂 Проверка site_dump:"
-          ls -la android_app/app/src/main/assets/site_dump/
+          ls -la android_app/app/src/main/assets/site_dump/ || echo "❌ Папка site_dump не найдена"
+          if [ -f android_app/app/src/main/assets/films.json ]; then
+            echo "✅ films.json загружен"
+            FILMS_COUNT=$(cat android_app/app/src/main/assets/films.json | python -c "import sys, json; print(len(json.load(sys.stdin)))")
+            echo "📊 Фильмов в базе: $FILMS_COUNT"
+          else
+            echo "❌ films.json не найден!"
+            exit 1
+          fi
 
+      # 4. Устанавливаем Java
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
+      # 5. Устанавливаем Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # 6. Собираем APK
       - name: Build APK
         run: |
           cd android_app
           chmod +x gradlew
           ./gradlew assembleDebug
 
+      # 7. Загружаем APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: animevost-app
           path: android_app/app/build/outputs/apk/debug/*.apk
           retention-days: 30
+
+      # 8. Создаём релиз (опционально)
+      - name: Create Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "AnimeVost APK v${{ github.run_number }}"
+          tag_name: "v${{ github.run_number }}"
+          files: android_app/app/build/outputs/apk/debug/*.apk
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
