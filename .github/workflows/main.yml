@@ -1,4 +1,4 @@
-name: Build AnimeVost APK265
+name: Build AnimeVost APK
 
 on:
   schedule:
@@ -22,7 +22,7 @@ jobs:
       films_count: ${{ steps.check_data.outputs.films_count }}
     
     steps:
-      # 1. Клонируем репозиторий
+      # 1. Клонируем репозиторий (со всеми файлами)
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -38,15 +38,17 @@ jobs:
         run: |
           pip install requests beautifulsoup4 lxml
 
-      # 4. Создаём папку для анализатора
-      - name: Create analyzer directory
+      # 4. Проверяем, что анализатор существует
+      - name: Check analyzer exists
         run: |
-          mkdir -p analyzer
-          cat > analyzer/analyze_animevost.py << 'EOF'
-          # ВСТАВЬТЕ СЮДА ВЕСЬ КОД АНАЛИЗАТОРА
-          EOF
+          if [ -f analyzer/analyze_animevost.py ]; then
+            echo "✅ Анализатор найден: analyzer/analyze_animevost.py"
+          else
+            echo "❌ Анализатор не найден! Создайте файл analyzer/analyze_animevost.py"
+            exit 1
+          fi
 
-      # 5. Запускаем анализатор
+      # 5. Запускаем анализатор из репозитория
       - name: Run analyzer
         id: analyze
         run: |
@@ -54,10 +56,16 @@ jobs:
           python analyze_animevost.py
           echo "✅ Анализатор завершил работу"
 
-      # 6. Проверяем результат
+      # 6. Проверяем результат (файлы должны быть в analyzer/site_dump/)
       - name: Check data
         id: check_data
         run: |
+          echo "📂 Проверка содержимого analyzer/:"
+          ls -la analyzer/ || echo "❌ Папка analyzer не найдена"
+          
+          echo "📂 Проверка содержимого analyzer/site_dump/:"
+          ls -la analyzer/site_dump/ || echo "❌ Папка site_dump не найдена"
+          
           if [ -f analyzer/site_dump/films.json ]; then
             FILMS_COUNT=$(cat analyzer/site_dump/films.json | python -c "import sys, json; print(len(json.load(sys.stdin)))")
             echo "has_data=true" >> $GITHUB_OUTPUT
@@ -66,6 +74,8 @@ jobs:
           else
             echo "has_data=false" >> $GITHUB_OUTPUT
             echo "❌ Файл films.json не создан!"
+            echo "📂 Проверяем всё содержимое:"
+            find . -name "*.json" 2>/dev/null || echo "JSON-файлы не найдены"
             exit 1
           fi
 
@@ -82,13 +92,6 @@ jobs:
         with:
           name: films-data
           path: analyzer/site_dump/films.json
-          retention-days: 7
-
-      - name: Upload site_structure.json
-        uses: actions/upload-artifact@v4
-        with:
-          name: site-structure
-          path: analyzer/site_dump/site_structure.json
           retention-days: 7
 
   # ==================== JOB 2: СБОРКА APK ====================
@@ -110,12 +113,6 @@ jobs:
           name: films-data
           path: android_app/app/src/main/assets/
 
-      - name: Download site structure
-        uses: actions/download-artifact@v4
-        with:
-          name: site-structure
-          path: android_app/app/src/main/assets/
-
       - name: Download full site dump
         uses: actions/download-artifact@v4
         with:
@@ -127,8 +124,7 @@ jobs:
         run: |
           echo "📂 Проверка файлов в assets:"
           ls -la android_app/app/src/main/assets/ || echo "❌ Папка assets не найдена"
-          echo "📂 Проверка site_dump:"
-          ls -la android_app/app/src/main/assets/site_dump/ || echo "❌ Папка site_dump не найдена"
+          
           if [ -f android_app/app/src/main/assets/films.json ]; then
             echo "✅ films.json загружен"
             FILMS_COUNT=$(cat android_app/app/src/main/assets/films.json | python -c "import sys, json; print(len(json.load(sys.stdin)))")
@@ -163,17 +159,3 @@ jobs:
           name: animevost-app
           path: android_app/app/build/outputs/apk/debug/*.apk
           retention-days: 30
-
-      # 8. Создаём релиз (опционально)
-      - name: Create Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          name: "AnimeVost APK v${{ github.run_number }}"
-          tag_name: "v${{ github.run_number }}"
-          files: android_app/app/build/outputs/apk/debug/*.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
