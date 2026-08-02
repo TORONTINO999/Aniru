@@ -1,21 +1,21 @@
-name: Build AnimeVost APK
+name: Build AnimeVost APK_66
 
 on:
   schedule:
-    - cron: '0 0 * * 0'   # Каждое воскресенье
-  workflow_dispatch:
+    - cron: '0 0 * * 0'   # Каждое воскресенье в 00:00 UTC
+  workflow_dispatch:      # Возможность ручного запуска
   push:
-    branches: [ main ]
+    branches: [ main, master ]
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # <- Включает Node.js 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  analyze-and-build:
+  build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -23,13 +23,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install requests beautifulsoup4 lxml
 
-      - name: Run fast analyzer
-        run: python fast_analyzer.py
-
-      - name: Setup Java
+      - name: Setup Java (JDK 17)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
@@ -38,14 +35,16 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build APK
+      - name: Run Unified Parser & APK Builder
         run: |
-          cd android_app
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          echo "🚀 Запуск единого скрипта парсинга и сборки..."
+          chmod +x unified_builder.py
+          python unified_builder.py
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: animevost-app
-          path: android_app/app/build/outputs/apk/debug/*.apk
+          path: animevost_app.apk
+          if-no-files-found: error
+          retention-days: 90
