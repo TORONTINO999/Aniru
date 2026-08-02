@@ -1,4 +1,4 @@
-name: Build AnimeVost APK573
+name: Build AnimeVost APK
 
 on:
   schedule:
@@ -8,12 +8,12 @@ on:
     branches: [ main ]
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # <- Включает Node.js 24
 
 jobs:
   analyze-and-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # Увеличено до 30 минут (обычно хватает)
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
