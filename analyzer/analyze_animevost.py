@@ -3,19 +3,18 @@
 
 """
 ПОЛНЫЙ АНАЛИЗАТОР САЙТА ANIMEVOST
-Скачивает ВСЁ: HTML, CSS, JavaScript, изображения, шрифты
+Скачивает ВСЁ: HTML, CSS, JavaScript, изображения
 Анализирует JS-код на наличие API, ключей, методов
 Сохраняет полную структуру в JSON для использования в приложении
 
-Запуск: python full_site_analyzer.py
-Результат: site_structure.json (полная структура сайта)
+Запуск: python analyze_animevost.py
+Результат: site_dump/ (папка со всеми данными)
 """
 
 import os
 import re
 import json
 import time
-import zlib
 import hashlib
 import requests
 from urllib.parse import urljoin, urlparse
@@ -26,46 +25,38 @@ from typing import Dict, List, Set, Optional, Any
 
 # ==================== КОНФИГУРАЦИЯ ====================
 BASE_URL = "https://v13.vost.pw"
-OUTPUT_DIR = "site_structure"
-MAX_PAGES = 2000  # Максимум страниц для сканирования
+OUTPUT_DIR = "site_dump"  # Папка для всех данных
+MAX_PAGES = 2000
 REQUEST_DELAY = 0.5
-MAX_DEPTH = 5
+MAX_DEPTH = 3
 
 # ==================== КЛАСС АНАЛИЗАТОРА ====================
-class FullSiteAnalyzer:
+class AnimeVostAnalyzer:
     def __init__(self):
         self.base_url = BASE_URL
         self.output_dir = Path(OUTPUT_DIR)
         self.output_dir.mkdir(exist_ok=True)
         
-        # Структуры для сбора данных
-        self.pages: Dict[str, Dict] = {}  # Все страницы
-        self.scripts: Dict[str, Dict] = {}  # Все JS-файлы
-        self.styles: Dict[str, Dict] = {}  # Все CSS-файлы
-        self.images: Dict[str, Dict] = {}  # Все изображения
-        self.api_endpoints: Dict[str, List] = {}  # API-эндпоинты
-        self.js_methods: Dict[str, List] = {}  # JS-методы
-        self.video_links: List[str] = []  # Видео-ссылки
-        self.iframe_links: List[str] = []  # Iframe-ссылки
+        # Основные структуры данных
+        self.films = []           # Все фильмы
+        self.categories = {}      # Категории с фильмами
+        self.pages = {}           # Все страницы
+        self.scripts = {}         # JS-файлы
+        self.styles = {}          # CSS-файлы
+        self.api_endpoints = {}   # API-эндпоинты
+        self.js_methods = {}      # JS-методы
+        self.patterns = {}        # Найденные паттерны
         
-        self.visited_urls: Set[str] = set()
-        self.film_data: List[Dict] = []  # Все фильмы
-        self.category_structure: Dict = {}  # Структура категорий
-        
+        self.visited_urls = set()
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Cache-Control": "max-age=0"
+            "Connection": "keep-alive"
         })
 
-    # ==================== ЗАГРУЗКА РЕСУРСОВ ====================
     def fetch_url(self, url: str, binary: bool = False) -> Optional[Any]:
         """Загружает URL с обработкой ошибок"""
         if url in self.visited_urls:
@@ -77,7 +68,7 @@ class FullSiteAnalyzer:
             self.visited_urls.add(url)
             return response.content if binary else response.text
         except Exception as e:
-            print(f"  ❌ Ошибка: {url} - {e}")
+            print(f"  ❌ {e}")
             return None
 
     def get_absolute_url(self, url: str) -> str:
@@ -93,473 +84,294 @@ class FullSiteAnalyzer:
         parsed = urlparse(url)
         return (not parsed.netloc) or self.base_url in parsed.netloc
 
-    # ==================== АНАЛИЗ HTML ====================
-    def analyze_html(self, html: str, url: str) -> Dict:
-        """Полный анализ HTML-страницы"""
+    # ==================== ПАРСИНГ КАТЕГОРИЙ ====================
+    def parse_category(self, category_url: str) -> List[Dict]:
+        """Парсит все страницы категории и собирает фильмы"""
+        print(f"\n📂 Анализ категории: {category_url}")
+        all_films = []
+        page = 1
+        
+        while page <= 100:
+            url = category_url if page == 1 else f"{category_url}page/{page}/"
+            print(f"  📄 Страница {page}...")
+            
+            html = self.fetch_url(url)
+            if not html:
+                break
+            
+            soup = BeautifulSoup(html, "lxml")
+            articles = soup.select("article.post")
+            
+            if not articles:
+                print(f"  ℹ️ Страница {page} пуста – конец")
+                break
+            
+            for article in articles:
+                a = article.select_one("span a")
+                if not a:
+                    continue
+                
+                href = a.get("href")
+                if not href:
+                    continue
+                
+                film_url = self.get_absolute_url(href)
+                title = article.select_one("h2").text.strip() if article.select_one("h2") else "Без названия"
+                year_elem = article.select_one("a[href*='/god/']")
+                year = year_elem.text.strip() if year_elem else "неизвестно"
+                
+                style = article.get("style", "")
+                poster_match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
+                poster = poster_match.group(1) if poster_match else ""
+                if poster and not poster.startswith("http"):
+                    poster = self.get_absolute_url(poster)
+                
+                id_match = re.search(r"/(\d+)-", href)
+                film_id = id_match.group(1) if id_match else None
+                
+                category = category_url.strip("/").split("/")[-1] if category_url else "unknown"
+                
+                film_data = {
+                    "id": film_id,
+                    "title": title,
+                    "year": year,
+                    "poster": poster,
+                    "url": film_url,
+                    "category": category
+                }
+                
+                # Проверяем дубликаты
+                if not any(f["url"] == film_url for f in all_films):
+                    all_films.append(film_data)
+            
+            print(f"  ✅ Найдено {len(articles)} фильмов (всего в категории: {len(all_films)})")
+            
+            # Проверяем следующую страницу
+            if page == 1:
+                pager = soup.select_one(".pager")
+                if not pager or not pager.find("a", href=re.compile(r"/page/2/")):
+                    break
+            else:
+                if not soup.select_one(f"a[href*='{category_url}page/{page+1}/']"):
+                    break
+            
+            page += 1
+            time.sleep(REQUEST_DELAY)
+        
+        return all_films
+
+    # ==================== АНАЛИЗ СТРАНИЦЫ ====================
+    def analyze_page(self, url: str) -> Dict:
+        """Анализирует отдельную HTML-страницу"""
+        html = self.fetch_url(url)
+        if not html:
+            return {}
+        
         soup = BeautifulSoup(html, "lxml")
         
         analysis = {
             "url": url,
             "title": soup.title.string.strip() if soup.title else "",
-            "meta": {},
-            "links": {"internal": [], "external": []},
             "scripts": [],
             "styles": [],
             "images": [],
             "iframes": [],
-            "forms": [],
-            "video": [],
-            "audio": [],
-            "comments": [],
-            "dom_structure": self._analyze_dom(soup),
-            "keywords": [],
-            "description": ""
+            "links": []
         }
         
-        # Meta-теги
-        for meta in soup.find_all("meta"):
-            name = meta.get("name") or meta.get("property") or ""
-            content = meta.get("content", "")
-            if name and content:
-                analysis["meta"][name] = content
-                if name == "keywords":
-                    analysis["keywords"] = [k.strip() for k in content.split(",")]
-                if name == "description":
-                    analysis["description"] = content
-        
-        # Ссылки
-        for a in soup.find_all("a", href=True):
-            href = a.get("href")
-            if href and not href.startswith("#") and not href.startswith("javascript:"):
-                full_url = self.get_absolute_url(href)
-                if self.is_internal(full_url):
-                    analysis["links"]["internal"].append(full_url)
-                else:
-                    analysis["links"]["external"].append(full_url)
-        
-        # Скрипты
+        # Собираем ресурсы
         for script in soup.find_all("script"):
             src = script.get("src")
             if src:
                 analysis["scripts"].append(self.get_absolute_url(src))
-            elif script.string:
-                analysis["comments"].append({
-                    "type": "inline_script",
-                    "content": script.string[:500]
-                })
         
-        # Стили
         for link in soup.find_all("link", rel="stylesheet"):
             href = link.get("href")
             if href:
                 analysis["styles"].append(self.get_absolute_url(href))
         
-        # Изображения
         for img in soup.find_all("img"):
             src = img.get("src")
             if src:
                 analysis["images"].append(self.get_absolute_url(src))
         
-        # Iframe
         for iframe in soup.find_all("iframe"):
             src = iframe.get("src")
             if src:
                 analysis["iframes"].append(self.get_absolute_url(src))
         
-        # Видео
-        for video in soup.find_all("video"):
-            src = video.get("src")
-            if src:
-                analysis["video"].append(self.get_absolute_url(src))
-            for source in video.find_all("source"):
-                src = source.get("src")
-                if src:
-                    analysis["video"].append(self.get_absolute_url(src))
-        
-        # Формы
-        for form in soup.find_all("form"):
-            form_data = {
-                "action": form.get("action", ""),
-                "method": form.get("method", "get"),
-                "inputs": []
-            }
-            for input_tag in form.find_all("input"):
-                form_data["inputs"].append({
-                    "name": input_tag.get("name", ""),
-                    "type": input_tag.get("type", "text"),
-                    "value": input_tag.get("value", "")
-                })
-            analysis["forms"].append(form_data)
+        for a in soup.find_all("a", href=True):
+            href = a.get("href")
+            if href and not href.startswith("#"):
+                analysis["links"].append(self.get_absolute_url(href))
         
         return analysis
-
-    def _analyze_dom(self, soup) -> Dict:
-        """Анализирует структуру DOM"""
-        dom = {
-            "tags": {},
-            "classes": {},
-            "ids": {},
-            "data_attrs": {},
-            "max_depth": 0
-        }
-        
-        def traverse(element, depth=0):
-            if depth > dom["max_depth"]:
-                dom["max_depth"] = depth
-            
-            tag = element.name
-            if tag:
-                dom["tags"][tag] = dom["tags"].get(tag, 0) + 1
-            
-            if element.get("class"):
-                for cls in element.get("class"):
-                    dom["classes"][cls] = dom["classes"].get(cls, 0) + 1
-            
-            if element.get("id"):
-                dom["ids"][element.get("id")] = True
-            
-            for attr in element.attrs:
-                if attr.startswith("data-"):
-                    dom["data_attrs"][attr] = dom["data_attrs"].get(attr, 0) + 1
-            
-            for child in element.children:
-                if hasattr(child, "name") and child.name:
-                    traverse(child, depth + 1)
-        
-        for child in soup.children:
-            if hasattr(child, "name") and child.name:
-                traverse(child)
-        
-        return dom
 
     # ==================== АНАЛИЗ JAVASCRIPT ====================
-    def analyze_javascript(self, content: str, url: str) -> Dict:
-        """Глубокий анализ JavaScript-кода"""
-        analysis = {
-            "url": url,
-            "size": len(content),
-            "variables": [],
-            "functions": [],
-            "api_calls": [],
-            "endpoints": [],
-            "urls": [],
-            "keys": [],
-            "tokens": [],
-            "imports": [],
-            "exports": [],
-            "event_listeners": [],
-            "ajax_calls": [],
-            "fetch_calls": [],
-            "eval_calls": [],
-            "regex_patterns": [],
-            "strings": []
-        }
-        
-        # Паттерны для анализа
-        patterns = {
-            "url": re.compile(r'https?://[^\s"\'<>]+'),
-            "api": re.compile(r'(/api/|/v1/|/v2/|/get_|/set_|/dl\.php|/video\.php)[^\s"\'<>]*'),
-            "key": re.compile(r'["\'](api[_\s]*key|apikey|key|token|secret|password)["\']\s*[:=]\s*["\']([^"\']+)["\']', re.I),
-            "function": re.compile(r'function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\('),
-            "fetch": re.compile(r'fetch\s*\(\s*["\']([^"\']+)["\']'),
-            "ajax": re.compile(r'\$\.(?:ajax|get|post|getJSON)\s*\(\s*["\']([^"\']+)["\']'),
-            "import": re.compile(r'import\s+.*?from\s+["\']([^"\']+)["\']'),
-            "export": re.compile(r'export\s+(?:default\s+)?(?:function|class|const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)'),
-            "eval": re.compile(r'eval\s*\(["\']([^"\']+)["\']'),
-            "event": re.compile(r'\.(?:addEventListener|on)\s*\(\s*["\']([^"\']+)["\']'),
-        }
-        
-        # Анализ по паттернам
-        for name, pattern in patterns.items():
-            matches = pattern.findall(content)
-            if matches:
-                if name == "key":
-                    analysis["keys"].extend(matches)
-                elif name == "function":
-                    analysis["functions"].extend(matches)
-                elif name == "fetch":
-                    analysis["fetch_calls"].extend(matches)
-                elif name == "ajax":
-                    analysis["ajax_calls"].extend(matches)
-                elif name == "import":
-                    analysis["imports"].extend(matches)
-                elif name == "export":
-                    analysis["exports"].extend(matches)
-                elif name == "eval":
-                    analysis["eval_calls"].extend(matches)
-                elif name == "event":
-                    analysis["event_listeners"].extend(matches)
-                elif name == "url":
-                    analysis["urls"].extend(matches)
-                elif name == "api":
-                    analysis["api_calls"].extend(matches)
-                    analysis["endpoints"].extend(matches)
-        
-        # Ищем строки (для анализа данных)
-        string_pattern = re.compile(r'["\']([^"\']{10,})["\']')
-        analysis["strings"] = string_pattern.findall(content)
-        
-        # Ищем переменные
-        var_pattern = re.compile(r'(?:var|let|const)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*[=;]')
-        analysis["variables"] = var_pattern.findall(content)
-        
-        # Ищем токены (длинные строки)
-        for s in analysis["strings"]:
-            if len(s) > 20 and any(c.isalnum() for c in s):
-                analysis["tokens"].append(s)
-        
-        return analysis
-
-    # ==================== АНАЛИЗ CSS ====================
-    def analyze_css(self, content: str, url: str) -> Dict:
-        """Анализирует CSS-файл"""
-        analysis = {
-            "url": url,
-            "size": len(content),
-            "selectors": [],
-            "properties": [],
-            "media_queries": [],
-            "keyframes": [],
-            "imports": [],
-            "colors": [],
-            "fonts": [],
-            "urls": []
-        }
-        
-        # Селекторы
-        selector_pattern = re.compile(r'([.#]?[a-zA-Z_][a-zA-Z0-9_-]*)\s*{')
-        analysis["selectors"] = list(set(selector_pattern.findall(content)))
-        
-        # Свойства
-        prop_pattern = re.compile(r'([a-zA-Z-]+)\s*:\s*([^;{]+);')
-        properties = prop_pattern.findall(content)
-        for prop, value in properties:
-            analysis["properties"].append(prop)
-            if "url(" in value:
-                analysis["urls"].extend(re.findall(r'url\(["\']?([^)"\']+)["\']?\)', value))
-            if "#" in value and len(value) < 8:
-                analysis["colors"].extend(re.findall(r'#[a-fA-F0-9]{3,6}', value))
-        
-        # Media Queries
-        mq_pattern = re.compile(r'@media\s+[^{]+{')
-        analysis["media_queries"] = mq_pattern.findall(content)
-        
-        # Keyframes
-        kf_pattern = re.compile(r'@keyframes\s+([a-zA-Z_][a-zA-Z0-9_-]*)\s*{')
-        analysis["keyframes"] = kf_pattern.findall(content)
-        
-        # Импорты
-        import_pattern = re.compile(r'@import\s+["\']([^"\']+)["\']')
-        analysis["imports"] = import_pattern.findall(content)
-        
-        # Шрифты
-        font_pattern = re.compile(r'font-family\s*:\s*([^;]+);')
-        analysis["fonts"] = list(set(font_pattern.findall(content)))
-        
-        return analysis
-
-    # ==================== КРАУЛИНГ САЙТА ====================
-    def crawl_site(self):
-        """Запускает полный обход сайта"""
-        print("🕷️ ЗАПУСК ПОЛНОГО КРАУЛИНГА САЙТА")
-        print("═" * 60)
-        
-        # Стартовые URL
-        start_urls = [
-            self.base_url,
-            f"{self.base_url}/tip/polnometrazhnyy-film/",
-            f"{self.base_url}/tip/tv/",
-            f"{self.base_url}/tip/ova/",
-            f"{self.base_url}/tip/ona/",
-            f"{self.base_url}/tip/tv-speshl/",
-            f"{self.base_url}/tip/korotkometrazhnyy-film/",
-            f"{self.base_url}/tip/dunkhua/"
-        ]
-        
-        for start_url in start_urls:
-            self._crawl_page(start_url, depth=0)
-        
-        self._save_structure()
-        self._generate_json_for_app()
-
-    def _crawl_page(self, url: str, depth: int):
-        """Обходит одну страницу рекурсивно"""
-        if depth > MAX_DEPTH or len(self.visited_urls) > MAX_PAGES:
-            return
-        
-        print(f"📄 [{depth}] {url}")
-        html = self.fetch_url(url)
-        if not html:
-            return
-        
-        # Анализируем HTML
-        page_analysis = self.analyze_html(html, url)
-        self.pages[url] = page_analysis
-        
-        # Определяем тип страницы
-        if "/tip/" in url and "/page/" not in url:
-            self._extract_films(html, url)
-        elif "/page/" in url:
-            self._extract_films(html, url)
-        
-        # Скачиваем и анализируем ресурсы
-        for script_url in page_analysis["scripts"][:10]:  # Ограничиваем
-            self._analyze_script(script_url)
-            time.sleep(REQUEST_DELAY)
-        
-        for style_url in page_analysis["styles"][:5]:
-            self._analyze_style(style_url)
-            time.sleep(REQUEST_DELAY)
-        
-        # Обрабатываем внутренние ссылки
-        for link in page_analysis["links"]["internal"][:10]:
-            if link not in self.visited_urls:
-                self._crawl_page(link, depth + 1)
-                time.sleep(REQUEST_DELAY)
-
-    def _analyze_script(self, url: str):
+    def analyze_javascript(self, url: str) -> Dict:
         """Анализирует JavaScript-файл"""
         if url in self.scripts:
-            return
+            return self.scripts[url]
         
         print(f"  📜 JS: {url}")
         content = self.fetch_url(url)
         if not content:
-            return
+            return {}
         
-        analysis = self.analyze_javascript(content, url)
+        analysis = {
+            "url": url,
+            "size": len(content),
+            "functions": [],
+            "api_calls": [],
+            "endpoints": [],
+            "keys": [],
+            "urls": []
+        }
+        
+        # Паттерны для анализа
+        patterns = {
+            "function": re.compile(r'function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\('),
+            "api": re.compile(r'(/api/|/v1/|/v2/|/get_|/set_|/dl\.php|/video\.php)[^\s"\'<>]*'),
+            "key": re.compile(r'["\'](api[_\s]*key|apikey|key|token|secret)["\']\s*[:=]\s*["\']([^"\']+)["\']', re.I),
+            "url": re.compile(r'https?://[^\s"\'<>]+'),
+            "fetch": re.compile(r'fetch\s*\(\s*["\']([^"\']+)["\']'),
+            "ajax": re.compile(r'\$\.(?:ajax|get|post|getJSON)\s*\(\s*["\']([^"\']+)["\']'),
+        }
+        
+        for name, pattern in patterns.items():
+            matches = pattern.findall(content)
+            if matches:
+                if name == "function":
+                    analysis["functions"].extend(matches)
+                elif name == "api":
+                    analysis["api_calls"].extend(matches)
+                    analysis["endpoints"].extend(matches)
+                elif name == "key":
+                    analysis["keys"].extend(matches)
+                elif name == "url":
+                    analysis["urls"].extend(matches)
+                elif name in ["fetch", "ajax"]:
+                    analysis["api_calls"].extend(matches)
+                    analysis["endpoints"].extend(matches)
+        
         self.scripts[url] = analysis
-        
-        # Сохраняем найденные API-эндпоинты
-        for endpoint in analysis["endpoints"]:
-            if endpoint not in self.api_endpoints:
-                self.api_endpoints[endpoint] = []
-            self.api_endpoints[endpoint].append(url)
-        
-        # Сохраняем методы
-        for method in analysis["functions"]:
-            if method not in self.js_methods:
-                self.js_methods[method] = []
-            self.js_methods[method].append(url)
+        return analysis
 
-    def _analyze_style(self, url: str):
-        """Анализирует CSS-файл"""
-        if url in self.styles:
-            return
+    # ==================== ОСНОВНОЙ ЗАПУСК ====================
+    def run(self):
+        """Запускает полный анализ сайта"""
+        print("🚀 ЗАПУСК ПОЛНОГО АНАЛИЗА САЙТА")
+        print("═" * 60)
         
-        print(f"  🎨 CSS: {url}")
-        content = self.fetch_url(url)
-        if not content:
-            return
+        # Категории для обхода
+        categories = [
+            "/tip/polnometrazhnyy-film/",
+            "/tip/tv/",
+            "/tip/ova/",
+            "/tip/ona/",
+            "/tip/tv-speshl/",
+            "/tip/korotkometrazhnyy-film/",
+            "/tip/dunkhua/"
+        ]
         
-        self.styles[url] = self.analyze_css(content, url)
-
-    def _extract_films(self, html: str, url: str):
-        """Извлекает фильмы со страницы категории"""
-        soup = BeautifulSoup(html, "lxml")
+        all_films = []
         
-        for article in soup.select("article.post"):
-            a = article.select_one("span a")
-            if not a:
-                continue
+        for cat in categories:
+            cat_url = self.get_absolute_url(cat)
+            films = self.parse_category(cat_url)
+            all_films.extend(films)
             
-            href = a.get("href")
-            if not href:
-                continue
-            
-            film_url = self.get_absolute_url(href)
-            
-            title = article.select_one("h2").text.strip() if article.select_one("h2") else "Без названия"
-            year_elem = article.select_one("a[href*='/god/']")
-            year = year_elem.text.strip() if year_elem else "неизвестно"
-            
-            style = article.get("style", "")
-            poster_match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
-            poster = poster_match.group(1) if poster_match else ""
-            if poster and not poster.startswith("http"):
-                poster = self.get_absolute_url(poster)
-            
-            id_match = re.search(r"/(\d+)-", href)
-            film_id = id_match.group(1) if id_match else None
-            
-            category_match = re.search(r"/tip/([^/]+)/", url)
-            category = category_match.group(1) if category_match else "unknown"
-            
-            film_data = {
-                "id": film_id,
-                "title": title,
-                "year": year,
-                "poster": poster,
-                "url": film_url,
-                "category": category
+            category_name = cat.strip("/").split("/")[-1]
+            self.categories[category_name] = {
+                "url": cat_url,
+                "count": len(films),
+                "films": films
             }
             
-            # Проверяем, есть ли уже такой фильм
-            if not any(f["url"] == film_url for f in self.film_data):
-                self.film_data.append(film_data)
+            time.sleep(REQUEST_DELAY * 2)
+        
+        # Сохраняем фильмы
+        self.films = all_films
+        print(f"\n✅ Всего собрано фильмов: {len(self.films)}")
+        
+        # Анализируем JS-файлы (первые 10 с главной страницы)
+        print("\n📜 Анализ JavaScript-файлов...")
+        main_html = self.fetch_url(self.base_url)
+        if main_html:
+            soup = BeautifulSoup(main_html, "lxml")
+            for script in soup.find_all("script"):
+                src = script.get("src")
+                if src:
+                    js_url = self.get_absolute_url(src)
+                    self.analyze_javascript(js_url)
+                    time.sleep(REQUEST_DELAY)
+        
+        # Сохраняем всё
+        self.save_data()
+        print("\n✅ АНАЛИЗ ЗАВЕРШЁН")
 
-    # ==================== СОХРАНЕНИЕ СТРУКТУРЫ ====================
-    def _save_structure(self):
-        """Сохраняет полную структуру в JSON"""
+    # ==================== СОХРАНЕНИЕ ДАННЫХ ====================
+    def save_data(self):
+        """Сохраняет все данные в JSON-файлы"""
+        print("\n💾 Сохранение данных...")
+        
+        # 1. Основной JSON со всеми фильмами
+        films_file = self.output_dir / "films.json"
+        with open(films_file, "w", encoding="utf-8") as f:
+            json.dump(self.films, f, indent=2, ensure_ascii=False)
+        print(f"  ✅ films.json ({len(self.films)} фильмов)")
+        
+        # 2. Категории
+        categories_file = self.output_dir / "categories.json"
+        with open(categories_file, "w", encoding="utf-8") as f:
+            json.dump(self.categories, f, indent=2, ensure_ascii=False)
+        print(f"  ✅ categories.json ({len(self.categories)} категорий)")
+        
+        # 3. JavaScript-анализ
+        js_file = self.output_dir / "scripts.json"
+        with open(js_file, "w", encoding="utf-8") as f:
+            json.dump(self.scripts, f, indent=2, ensure_ascii=False)
+        print(f"  ✅ scripts.json ({len(self.scripts)} файлов)")
+        
+        # 4. Полная структура для приложения
         structure = {
             "timestamp": datetime.now().isoformat(),
             "base_url": self.base_url,
-            "statistics": {
-                "total_pages": len(self.pages),
-                "total_scripts": len(self.scripts),
-                "total_styles": len(self.styles),
-                "total_films": len(self.film_data),
-                "total_api_endpoints": len(self.api_endpoints),
-                "total_js_methods": len(self.js_methods)
-            },
-            "pages": self.pages,
+            "total_films": len(self.films),
+            "total_categories": len(self.categories),
+            "total_scripts": len(self.scripts),
+            "films": self.films,
+            "categories": self.categories,
             "scripts": self.scripts,
-            "styles": self.styles,
-            "films": self.film_data,
             "api_endpoints": self.api_endpoints,
-            "js_methods": self.js_methods,
-            "video_links": list(set(self.video_links)),
-            "iframe_links": list(set(self.iframe_links))
+            "js_methods": self.js_methods
         }
         
-        # Сохраняем полную структуру
-        output_file = self.output_dir / "site_structure.json"
-        with open(output_file, "w", encoding="utf-8") as f:
+        structure_file = self.output_dir / "site_structure.json"
+        with open(structure_file, "w", encoding="utf-8") as f:
             json.dump(structure, f, indent=2, ensure_ascii=False)
+        print(f"  ✅ site_structure.json")
         
-        print(f"\n💾 Полная структура сохранена в {output_file}")
-        print(f"   📄 Страниц: {structure['statistics']['total_pages']}")
-        print(f"   📜 JS-файлов: {structure['statistics']['total_scripts']}")
-        print(f"   🎨 CSS-файлов: {structure['statistics']['total_styles']}")
-        print(f"   🎬 Фильмов: {structure['statistics']['total_films']}")
-        print(f"   🔗 API-эндпоинтов: {structure['statistics']['total_api_endpoints']}")
-
-    def _generate_json_for_app(self):
-        """Генерирует JSON для Android-приложения"""
+        # 5. Упрощённый JSON для Android
         app_data = {
-            "version": "1.0",
-            "timestamp": datetime.now().isoformat(),
-            "films": self.film_data,
-            "api_endpoints": self.api_endpoints,
-            "js_methods": self.js_methods,
-            "selectors": {
-                "film_card": "article.post",
-                "film_title": "h2",
-                "film_year": "a[href*='/god/']",
-                "film_poster": "span a",
-                "video_player": "video",
-                "iframe_player": "iframe"
-            }
+            "films": self.films,
+            "categories": list(self.categories.keys()),
+            "script_methods": self.js_methods,
+            "api_endpoints": self.api_endpoints
         }
-        
-        # Сохраняем для приложения
         app_file = self.output_dir / "app_data.json"
         with open(app_file, "w", encoding="utf-8") as f:
             json.dump(app_data, f, indent=2, ensure_ascii=False)
+        print(f"  ✅ app_data.json")
         
-        print(f"📱 Данные для приложения: {app_file}")
+        print(f"\n📁 Все файлы сохранены в: {self.output_dir.absolute()}")
+        print(f"   - films.json – все фильмы")
+        print(f"   - categories.json – категории")
+        print(f"   - scripts.json – JavaScript-анализ")
+        print(f"   - site_structure.json – полная структура")
+        print(f"   - app_data.json – данные для приложения")
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    analyzer = FullSiteAnalyzer()
-    analyzer.crawl_site()
+    analyzer = AnimeVostAnalyzer()
+    analyzer.run()
